@@ -2,10 +2,15 @@
 #define MAINWINDOW_H
 
 #include <QMainWindow>
+#include <QThread>
+#include <QCompleter>
+#include <QStringListModel>
+#include "predictionworker.h"
 
 QT_BEGIN_NAMESPACE
-namespace Ui {
-class MainWindow;
+namespace Ui
+{
+    class MainWindow;
 }
 QT_END_NAMESPACE
 
@@ -17,8 +22,13 @@ public:
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow() override;
 
+signals:
+    void requestPrediction(const QString &text, const QString &mode); // contextText, ProfileMode
+
 private slots:
     void on_textEdit_cursorPositionChanged();
+
+    void handlePredictions(const QStringList &suggestions);
 
     void on_actionNew_triggered();
 
@@ -60,5 +70,15 @@ private:
     Ui::MainWindow *ui;
 
     bool maybeSave();
+
+    QThread workerThread;
+    PredictionWorker *worker;
+    QCompleter *completer;
+    QStringListModel *completerModel;
+    QString currentMode;
+
+    void setupDatabase();
+    void initSmartEngine();
+    void logWordToUserVocabulary(const QString &word);
 };
 #endif // MAINWINDOW_H
