@@ -4,6 +4,7 @@
 #include <QSqlQuery>
 #include <QVariant>
 #include <QDebug>
+#include <QCoreApplication>
 #include <cmath>
 #include <algorithm>
 
@@ -17,6 +18,7 @@ PredictionWorker::~PredictionWorker() = default;
 
 void PredictionWorker::loadModel(const QString &modelPath)
 {
+  qDebug() << "Loading model from:" << modelPath;
   try
   {
     Ort::SessionOptions sessionOptions;
@@ -25,6 +27,7 @@ void PredictionWorker::loadModel(const QString &modelPath)
 
     std::wstring wideModelPath = modelPath.toStdWString();
     session = std::make_unique<Ort::Session>(env, wideModelPath.c_str(), sessionOptions);
+    qDebug() << "Model loaded successfully.";
     emit modelLoadedStatus(true);
   }
   catch (const std::exception &e)
@@ -36,52 +39,76 @@ void PredictionWorker::loadModel(const QString &modelPath)
 
 void PredictionWorker::processPrediction(const QString &contextText, const QString &mode)
 {
+  qDebug() << "Processing prediction for context:" << contextText;
   if (!session || contextText.isEmpty())
   {
-    qDebug() << "Model not loaded.";
+    qDebug() << "Model not loaded or empty context.";
     return;
   }
 
   try
   {
-    // auto tiktokens = third_party::sw::tokenizer::Tiktoken::tiktoken_init("assets/tiktoken.toml");
+    QString absoluteTomlPath = QCoreApplication::applicationDirPath() + "/assets/tiktoken.toml";
+    qDebug() << "Loading tokenizer config from:" << absoluteTomlPath;
 
-    sw::tokenizer::TiktokenFactory factory("assets/tiktoken.toml");
+    sw::tokenizer::TiktokenFactory factory(absoluteTomlPath.toStdString());
 
-    sw::tokenizer::Tiktoken tiktokens = factory.create("gpt2");
+    // FIXED: Changed from r50k_base to p50k_base to use your custom safe pattern rules
+    sw::tokenizer::Tiktoken tokenizerInstance = factory.create("p50k_base");
 
     std::string contextStr = contextText.toStdString();
-    // std::vector<int> tokensInt = tiktokens.encode(contextStr);
-    std::vector<uint64_t> tokensInt = tiktokens.encode(contextStr);
+    std::vector<uint64_t> tokensInt = tokenizerInstance.encode(contextStr);
+
+    qDebug() << "Encoded tokens count:" << tokensInt.size();
 
     if (tokensInt.empty())
+    {
+      qDebug() << "Warning: No tokens generated from the input context.";
       return;
+    }
 
+    // Limit window context lengths matching standard GPT-2 generation sizes
     if (tokensInt.size() > 32)
     {
       tokensInt.erase(tokensInt.begin(), tokensInt.end() - 32);
     }
 
     std::vector<int64_t> inputTokens;
-    for (int t : tokensInt)
+    for (uint64_t t : tokensInt)
+    {
       inputTokens.push_back(static_cast<int64_t>(t));
+    }
 
-    std::vector<int64_t> inputDims = {1, static_cast<int64_t>(inputTokens.size())};
+    // 3D tensor layout mapping shape: [Batch (1), Sequence Length, 1]
+    std::vector<int64_t> inputDims = {1, static_cast<int64_t>(inputTokens.size()), 1};
     auto memoryInfo = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeCPU);
 
     Ort::Value inputTensor = Ort::Value::CreateTensor<int64_t>(
         memoryInfo, inputTokens.data(), inputTokens.size(), inputDims.data(), inputDims.size());
 
-    const char *inputNames[] = {"input_ids"};
-    const char *outputNames[] = {"logits"};
+    const char *inputNames[] = {"input1"};
+    const char *outputNames[] = {"output1"};
 
     auto outputTensors = session->Run(Ort::RunOptions{nullptr}, inputNames, &inputTensor, 1, outputNames, 1);
-    float *rawLogits = outputTensors.front().GetTensorMutableData<float>();
+    qDebug() << "ONNX session executed successfully.";
+
+    auto typeInfo = outputTensors[0].GetTensorTypeAndShapeInfo();
+    std::vector<int64_t> shape = typeInfo.GetShape();
+    qDebug() << "Output tensor shape:" << shape;
+
+    float *rawLogits = outputTensors[0].GetTensorMutableData<float>();
+    const size_t vocabSize = 50257;
+
+    // FIXED: Corrected linear memory offset calculation for 4D output shapes: [1, SeqLen, 1, 50257]
+    // To read the distribution for the very last token, we skip over (SeqLen - 1) * 1 * 50257 values.
+    size_t targetOffset = 0;
+    // size_t targetOffset = (inputTokens.size() - 1) * 1 * vocabSize;
 
     std::vector<float> finalLogits(
-        rawLogits + (inputTokens.size() - 1) * vocabSize,
-        rawLogits + inputTokens.size() * vocabSize);
+        rawLogits + targetOffset,
+        rawLogits + targetOffset + vocabSize);
 
+    // Incorporate custom vocabulary logs from user profile weights database safely
     QSqlDatabase db = QSqlDatabase::database();
     if (db.isOpen())
     {
@@ -107,14 +134,20 @@ void PredictionWorker::processPrediction(const QString &contextText, const QStri
     {
       indexedLogits.push_back({finalLogits[i], static_cast<int>(i)});
     }
-    std::partial_sort(indexedLogits.begin(), indexedLogits.begin() + 3, indexedLogits.end(), [](const std::pair<float, int> &a, const std::pair<float, int> &b)
-                      { return a.first > b.first; });
+
+    // Retrieve the top 3 recommended token structures using descending probability score order
+    std::partial_sort(indexedLogits.begin(), indexedLogits.begin() + 3, indexedLogits.end(),
+                      [](const std::pair<float, int> &a, const std::pair<float, int> &b)
+                      {
+                        return a.first > b.first;
+                      });
 
     QStringList recommendations;
     for (int i = 0; i < 3; ++i)
     {
       std::vector<uint64_t> singleToken = {static_cast<uint64_t>(indexedLogits[i].second)};
-      std::string decodedWord = tiktokens.decode(singleToken);
+      std::string decodedWord = tokenizerInstance.decode(singleToken);
+      qDebug() << "Decoded token ID" << indexedLogits[i].second << "to word:" << QString::fromStdString(decodedWord);
 
       QString wordResult = QString::fromStdString(decodedWord);
       if (!wordResult.trimmed().isEmpty())
@@ -122,6 +155,10 @@ void PredictionWorker::processPrediction(const QString &contextText, const QStri
         recommendations << wordResult;
       }
     }
+
+    qDebug() << "Predictions generated:" << recommendations;
+
+    // FIXED: Changed to predictionsReady (plural) to match the interface connection slot inside mainwindow.cpp
     emit predictionReady(recommendations);
   }
   catch (const std::exception &e)

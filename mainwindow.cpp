@@ -3,27 +3,22 @@
 #include "tiktoken.h"
 
 #include <QMessageBox>
-
 #include <QFile>
 #include <QTextStream>
 #include <QFileDialog>
 #include <QFileInfo>
-
 #include <QFontDialog>
 #include <QFont>
-
 #include <QColorDialog>
 #include <QColor>
-
 #include <QtPrintSupport/QPrintDialog>
 #include <QtPrintSupport/QPrinter>
-
 #include <QSqlDatabase>
 #include <QSqlQuery>
-
 #include <QAbstractItemView>
 #include <QCompleter>
 #include <QStringListModel>
+#include <QCoreApplication>
 
 QString currentFile;
 
@@ -54,15 +49,15 @@ MainWindow::MainWindow(QWidget *parent)
             {
         QString fullDocumentText = ui->textEdit->toPlainText();
 
-        if(fullDocumentText.contains("#include") || fullDocumentText.contains("import ") || fullDocumentText.contains("using ")){
+        if(fullDocumentText.contains("#include") || fullDocumentText.contains("import ") || fullDocumentText.contains("using ")) {
             currentMode = "Code";
         }
-        else{
+        else {
             currentMode = "Blog";
         }
 
         QString trackingContext = fullDocumentText.right(80);
-        if(!trackingContext.isEmpty() && trackingContext.endsWith(" ")){
+        if(!trackingContext.isEmpty() && trackingContext.endsWith(" ")) {
             emit requestPrediction(trackingContext, currentMode);
         } });
 }
@@ -74,7 +69,6 @@ MainWindow::~MainWindow()
     delete ui;
 }
 
-// Update status bar
 void MainWindow::on_textEdit_cursorPositionChanged()
 {
     QTextCursor cursor = ui->textEdit->textCursor();
@@ -91,7 +85,6 @@ void MainWindow::on_textEdit_cursorPositionChanged()
     ui->statusbar->showMessage(status);
 }
 
-// Check for unsaved changes
 bool MainWindow::maybeSave()
 {
     if (!ui->textEdit->document()->isModified())
@@ -111,7 +104,6 @@ bool MainWindow::maybeSave()
     return true;
 }
 
-// New file
 void MainWindow::on_actionNew_triggered()
 {
     if (!maybeSave())
@@ -124,7 +116,6 @@ void MainWindow::on_actionNew_triggered()
     setWindowTitle("Untitled - SmartPad");
 }
 
-// Save file
 bool MainWindow::on_actionSave_triggered()
 {
     if (currentFile.isEmpty())
@@ -149,7 +140,6 @@ bool MainWindow::on_actionSave_triggered()
     return true;
 }
 
-// Save As
 bool MainWindow::on_actionSave_As_triggered()
 {
     QString filename = QFileDialog::getSaveFileName(
@@ -165,7 +155,6 @@ bool MainWindow::on_actionSave_As_triggered()
     return on_actionSave_triggered();
 }
 
-// Open file
 void MainWindow::on_actionOpen_triggered()
 {
     if (!maybeSave())
@@ -198,53 +187,25 @@ void MainWindow::on_actionOpen_triggered()
     ui->statusbar->showMessage("File opened", 3000);
 }
 
-// Exit app
 void MainWindow::on_actionExit_triggered()
 {
     if (maybeSave())
         close();
 }
 
-// Edit Tools
-
-void MainWindow::on_actionCut_triggered()
-{
-    ui->textEdit->cut();
-}
-
-void MainWindow::on_actionCopy_triggered()
-{
-    ui->textEdit->copy();
-}
-
-void MainWindow::on_actionPaste_triggered()
-{
-    ui->textEdit->paste();
-}
-
-void MainWindow::on_actionUndo_triggered()
-{
-    ui->textEdit->undo();
-}
-
-void MainWindow::on_actionRedo_triggered()
-{
-    ui->textEdit->redo();
-}
+void MainWindow::on_actionCut_triggered() { ui->textEdit->cut(); }
+void MainWindow::on_actionCopy_triggered() { ui->textEdit->copy(); }
+void MainWindow::on_actionPaste_triggered() { ui->textEdit->paste(); }
+void MainWindow::on_actionUndo_triggered() { ui->textEdit->undo(); }
+void MainWindow::on_actionRedo_triggered() { ui->textEdit->redo(); }
 
 void MainWindow::on_actionFont_triggered()
 {
     bool selected;
-
     QFont font = QFontDialog::getFont(&selected, this);
-
     if (selected)
     {
         ui->textEdit->setFont(font);
-    }
-    else
-    {
-        return;
     }
 }
 
@@ -266,60 +227,32 @@ void MainWindow::on_actionBg_Color_triggered()
     }
 }
 
-// About tool
-
 void MainWindow::on_actionAbout_triggered()
 {
     QString about_txt =
         "<h2>SmartPad</h2>"
-
         "<p><b>Version:</b> 2.0.0 (AI Powered)</p>"
-
-        "<p>"
-        "A lightweight yet powerful text editor built using the Qt framework, "
-        "supercharged with completely offline, private AI next-word predictions."
-        "</p>"
-
+        "<p>A lightweight yet powerful text editor built using the Qt framework, supercharged with completely offline, private AI next-word predictions.</p>"
         "<h3>✨ Features</h3>"
         "<ul>"
         "<li><b>Offline Next-Word Prediction:</b> Powered by an embedded local AI model.</li>"
         "<li><b>Real-Time Personalization:</b> Adapts and learns from your typing habits on the fly.</li>"
         "<li><b>Context Switching:</b> Automatically shifts profiles between Blog writing and Coding modes.</li>"
-        "<li>Create, open, and save text files</li>"
-        "<li>Undo & redo editing actions</li>"
-        "<li>Cut, copy, and paste support</li>"
-        "<li>Real-time cursor tracking (line, column, character count)</li>"
-        "<li>Custom font and text formatting</li>"
-        "<li>Text and background color customization</li>"
-        "<li>Zoom in, zoom out, and reset zoom</li>"
-        "<li>Print support</li>"
-        "<li>Unsaved changes protection</li>"
         "</ul>"
-
         "<h3>⚙️ Technology</h3>"
         "<p>Built with <b>Qt (C++)</b>, <b>ONNX Runtime Engine</b>, and <b>SQLite3 Embedded Database</b></p>"
-
         "<h3>👨‍💻 Developer</h3>"
-        "<p>Piyush Dev</p>"
-
-        "<p style='margin-top:15px; font-size:10pt; color:gray;'>"
-        "© 2026 All rights reserved."
-        "</p>";
+        "<p>Piyush Dev</p>";
 
     QMessageBox::about(this, "About SmartPad", about_txt);
 }
-
-// View tools
 
 void MainWindow::on_actionPrint_triggered()
 {
     QPrinter printer;
     QPrintDialog dialog(&printer, this);
-
     if (dialog.exec() == QDialog::Rejected)
-    {
         return;
-    }
     ui->textEdit->print(&printer);
 }
 
@@ -350,7 +283,8 @@ void MainWindow::on_actionRestor_to_Normal_Zoom_triggered()
 void MainWindow::setupDatabase()
 {
     QSqlDatabase db = QSqlDatabase::addDatabase("QSQLITE");
-    db.setDatabaseName("user_smartprofile.db");
+    QString dbPath = QCoreApplication::applicationDirPath() + "/user_smartprofile.db";
+    db.setDatabaseName(dbPath);
     if (db.open())
     {
         QSqlQuery query;
@@ -368,11 +302,13 @@ void MainWindow::initSmartEngine()
     worker->moveToThread(&workerThread);
 
     connect(this, &MainWindow::requestPrediction, worker, &PredictionWorker::processPrediction);
+
     connect(worker, &PredictionWorker::predictionReady, this, &MainWindow::handlePredictions);
 
     workerThread.start();
 
-    QMetaObject::invokeMethod(worker, "loadModel", Q_ARG(QString, "assets/gpt2-124m.onnx"));
+    QString absoluteModelPath = QCoreApplication::applicationDirPath() + "/assets/gpt2-lm-head-10.onnx";
+    QMetaObject::invokeMethod(worker, "loadModel", Q_ARG(QString, absoluteModelPath));
 }
 
 void MainWindow::handlePredictions(const QStringList &suggestions)
@@ -389,9 +325,10 @@ void MainWindow::handlePredictions(const QStringList &suggestions)
 
 void MainWindow::logWordToUserVocabulary(const QString &word)
 {
-    // auto tokenizerInstance = sw::tokenizer::Tiktoken::tiktoken_init("assets/tiktoken.toml");
-    sw::tokenizer::TiktokenFactory factory("assets/tiktoken.toml");
-    sw::tokenizer::Tiktoken tokenizerInstance = factory.create("gpt2");
+    QString absoluteTomlPath = QCoreApplication::applicationDirPath() + "/assets/tiktoken.toml";
+    sw::tokenizer::TiktokenFactory factory(absoluteTomlPath.toStdString());
+
+    sw::tokenizer::Tiktoken tokenizerInstance = factory.create("p50k_base");
 
     std::vector<uint64_t> ids = tokenizerInstance.encode(word.toStdString());
     if (ids.empty())

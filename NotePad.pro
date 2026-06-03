@@ -1,6 +1,7 @@
 QT += widgets printsupport sql
 
 CONFIG += c++17
+win32:CONFIG += console app_bundle
 
 #Direct compiler to your header search directories
 INCLUDEPATH += \
