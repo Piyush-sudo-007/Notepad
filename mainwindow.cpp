@@ -303,7 +303,7 @@ void MainWindow::initSmartEngine()
 
     connect(this, &MainWindow::requestPrediction, worker, &PredictionWorker::processPrediction);
 
-    connect(worker, &PredictionWorker::predictionReady, this, &MainWindow::handlePredictions);
+    connect(worker, &PredictionWorker::predictionsReady, this, &MainWindow::handlePredictions);
 
     workerThread.start();
 

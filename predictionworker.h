@@ -19,8 +19,8 @@ public slots:
   void processPrediction(const QString &contextText, const QString &mode);
 
 signals:
-  void predictionReady(const QStringList &suggestions);
   void modelLoadedStatus(bool success);
+  void predictionsReady(const QStringList &recommendations);
 
 private:
   Ort::Env env;

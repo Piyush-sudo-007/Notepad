@@ -1,18 +1,6 @@
 # 📝 NotePad (Qt C++)
 
-A lightweight and user-friendly text editor built using the Qt framework.
-
-## ✨ Features
-
-- Create, open, and save text files
-- Undo & redo functionality
-- Cut, copy, and paste support
-- Real-time cursor tracking (line, column, character count)
-- Font customization
-- Text and background color selection
-- Zoom in, zoom out, and reset zoom
-- Print support
-- Unsaved changes warning
+A lightweight and user-friendly text editor with offline next word predictions built using the Qt framework.
 
 ## 🛠️ Built With
 

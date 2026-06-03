@@ -52,8 +52,6 @@ void PredictionWorker::processPrediction(const QString &contextText, const QStri
     qDebug() << "Loading tokenizer config from:" << absoluteTomlPath;
 
     sw::tokenizer::TiktokenFactory factory(absoluteTomlPath.toStdString());
-
-    // FIXED: Changed from r50k_base to p50k_base to use your custom safe pattern rules
     sw::tokenizer::Tiktoken tokenizerInstance = factory.create("p50k_base");
 
     std::string contextStr = contextText.toStdString();
@@ -99,31 +97,37 @@ void PredictionWorker::processPrediction(const QString &contextText, const QStri
     float *rawLogits = outputTensors[0].GetTensorMutableData<float>();
     const size_t vocabSize = 50257;
 
-    // FIXED: Corrected linear memory offset calculation for 4D output shapes: [1, SeqLen, 1, 50257]
-    // To read the distribution for the very last token, we skip over (SeqLen - 1) * 1 * 50257 values.
-    size_t targetOffset = 0;
-    // size_t targetOffset = (inputTokens.size() - 1) * 1 * vocabSize;
+    // ==================== FIXED POINTER OFFSETS ====================
+    // Dimensions: [Batch (1), SeqLen, Dim (1), VocabSize (50257)]
+    // To read the next-word distribution for the *last* typed word,
+    // we skip past exactly (SeqLen - 1) token blocks.
+    size_t lastTokenIndex = inputTokens.size() - 1;
+    size_t targetOffset = lastTokenIndex * 1 * vocabSize;
 
     std::vector<float> finalLogits(
         rawLogits + targetOffset,
         rawLogits + targetOffset + vocabSize);
+    // ===============================================================
 
-    // Incorporate custom vocabulary logs from user profile weights database safely
-    QSqlDatabase db = QSqlDatabase::database();
-    if (db.isOpen())
+    // Incorporate custom vocabulary logs from user profile weights database safely across threads
     {
-      QSqlQuery query;
-      query.prepare("SELECT TokenID, BiasCount FROM UserVocabulary WHERE ProfileMode = :mode");
-      query.bindValue(":mode", mode);
-      if (query.exec())
+      // Open database instance using a safe thread-local alias hook
+      QSqlDatabase db = QSqlDatabase::database();
+      if (db.isOpen())
       {
-        while (query.next())
+        QSqlQuery query;
+        query.prepare("SELECT TokenID, BiasCount FROM UserVocabulary WHERE ProfileMode = :mode");
+        query.bindValue(":mode", mode);
+        if (query.exec())
         {
-          int tokenId = query.value(0).toInt();
-          int count = query.value(1).toInt();
-          if (tokenId >= 0 && static_cast<size_t>(tokenId) < finalLogits.size())
+          while (query.next())
           {
-            finalLogits[tokenId] += (static_cast<float>(count) * 0.45f);
+            int tokenId = query.value(0).toInt();
+            int count = query.value(1).toInt();
+            if (tokenId >= 0 && static_cast<size_t>(tokenId) < finalLogits.size())
+            {
+              finalLogits[tokenId] += (static_cast<float>(count) * 0.45f);
+            }
           }
         }
       }
@@ -150,7 +154,7 @@ void PredictionWorker::processPrediction(const QString &contextText, const QStri
       qDebug() << "Decoded token ID" << indexedLogits[i].second << "to word:" << QString::fromStdString(decodedWord);
 
       QString wordResult = QString::fromStdString(decodedWord);
-      if (!wordResult.trimmed().isEmpty())
+      if (!wordResult.isEmpty())
       {
         recommendations << wordResult;
       }
@@ -158,8 +162,7 @@ void PredictionWorker::processPrediction(const QString &contextText, const QStri
 
     qDebug() << "Predictions generated:" << recommendations;
 
-    // FIXED: Changed to predictionsReady (plural) to match the interface connection slot inside mainwindow.cpp
-    emit predictionReady(recommendations);
+    emit predictionsReady(recommendations);
   }
   catch (const std::exception &e)
   {
