@@ -5,17 +5,6 @@ A lightweight and user-friendly text editor with offline next word predictions b
 ## 🛠️ Built With
 
 - Qt 6 (C++)
-- Qt Widgets
-
-## 📂 Project Structure
-
-```
-main.cpp
-mainwindow.cpp
-mainwindow.h
-mainwindow.ui
-NotePad.pro
-```
 
 ## 🚀 How to Run
 
