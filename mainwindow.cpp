@@ -20,6 +20,8 @@
 #include <QStringListModel>
 #include <QCoreApplication>
 #include <QTextCursor>
+#include <QEvent>
+#include <QKeyEvent>
 
 QString currentFile;
 
@@ -38,6 +40,10 @@ MainWindow::MainWindow(QWidget *parent)
     completerModel = new QStringListModel(this);
     completer->setModel(completerModel);
     completer->setWidget(ui->textEdit);
+
+    ui->textEdit->installEventFilter(this);
+    completer->popup()->installEventFilter(this);
+
     completer->setCompletionMode(QCompleter::PopupCompletion);
 
     connect(completer, QOverload<const QString &>::of(&QCompleter::activated), this, [=](const QString &text)
@@ -362,4 +368,32 @@ void MainWindow::logWordToUserVocabulary(const QString &word)
     query.bindValue(":id", acceptedTokenId);
     query.bindValue(":mode", currentMode);
     query.exec();
+}
+
+bool MainWindow::eventFilter(QObject *obj, QEvent *event)
+{
+    if (event->type() == QEvent::KeyPress) {
+        QKeyEvent *keyEvent = static_cast<QKeyEvent *>(event);
+
+        if (keyEvent->key() == Qt::Key_Enter || keyEvent->key() == Qt::Key_Return) {
+
+            if (completer && completer->popup() && completer->popup()->isVisible()) {
+
+                QAbstractItemView *popupView = completer->popup();
+                QModelIndex currentIndex = popupView->currentIndex();
+
+                if (!currentIndex.isValid()) {
+                    currentIndex = completer->completionModel()->index(0, 0);
+                }
+                if (currentIndex.isValid()) {
+                    QString selectedCompletion = completer->completionModel()->data(currentIndex).toString();
+                    completer->popup()->hide();
+                    emit completer->activated(selectedCompletion);
+
+                    return true;
+                }
+            }
+        }
+    }
+    return QMainWindow::eventFilter(obj, event);
 }

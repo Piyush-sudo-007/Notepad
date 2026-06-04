@@ -80,5 +80,8 @@ private:
     void setupDatabase();
     void initSmartEngine();
     void logWordToUserVocabulary(const QString &word);
+
+protected:
+    bool eventFilter(QObject *obj, QEvent *event) override;
 };
 #endif // MAINWINDOW_H
