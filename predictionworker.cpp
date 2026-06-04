@@ -5,6 +5,7 @@
 #include <QVariant>
 #include <QDebug>
 #include <QCoreApplication>
+#include <QThread>
 #include <cmath>
 #include <algorithm>
 
@@ -54,7 +55,16 @@ void PredictionWorker::processPrediction(const QString &contextText, const QStri
     sw::tokenizer::TiktokenFactory factory(absoluteTomlPath.toStdString());
     sw::tokenizer::Tiktoken tokenizerInstance = factory.create("p50k_base");
 
-    std::string contextStr = contextText.toStdString();
+    QString trimmedContext = contextText.trimmed();
+    trimmedContext = trimmedContext.replace(QChar(0x00A0), " ");
+    qDebug() << "Trimmed context:" << trimmedContext;
+    if (trimmedContext.isEmpty())
+    {
+      qDebug() << "Warning: Context text is empty after trimming.";
+      return;
+    }
+
+    std::string contextStr = trimmedContext.toStdString();
     std::vector<uint64_t> tokensInt = tokenizerInstance.encode(contextStr);
 
     qDebug() << "Encoded tokens count:" << tokensInt.size();
@@ -71,10 +81,20 @@ void PredictionWorker::processPrediction(const QString &contextText, const QStri
       tokensInt.erase(tokensInt.begin(), tokensInt.end() - 32);
     }
 
+    const size_t vocabSize = 50257;
     std::vector<int64_t> inputTokens;
+
     for (uint64_t t : tokensInt)
     {
-      inputTokens.push_back(static_cast<int64_t>(t));
+      if (t >= vocabSize)
+      {
+        qDebug() << "Warning: Token ID" << t << "exceeds vocabulary size. Skipping.";
+        inputTokens.push_back(static_cast<int64_t>(vocabSize - 1));
+      }
+      else
+      {
+        inputTokens.push_back(static_cast<int64_t>(t));
+      }
     }
 
     // 3D tensor layout mapping shape: [Batch (1), Sequence Length, 1]
@@ -95,39 +115,58 @@ void PredictionWorker::processPrediction(const QString &contextText, const QStri
     qDebug() << "Output tensor shape:" << shape;
 
     float *rawLogits = outputTensors[0].GetTensorMutableData<float>();
-    const size_t vocabSize = 50257;
 
     // ==================== FIXED POINTER OFFSETS ====================
     // Dimensions: [Batch (1), SeqLen, Dim (1), VocabSize (50257)]
     // To read the next-word distribution for the *last* typed word,
     // we skip past exactly (SeqLen - 1) token blocks.
-    size_t lastTokenIndex = inputTokens.size() - 1;
-    size_t targetOffset = lastTokenIndex * 1 * vocabSize;
+    // size_t lastTokenIndex = inputTokens.size() - 1;
+    // size_t targetOffset = lastTokenIndex * 1 * vocabSize;
+
+    int64_t batchStride = shape[1] * shape[2] * shape[3];
+    int64_t seqStride = shape[2] * shape[3];
+    int64_t dimStride = shape[3];
+
+    int64_t lastTokenIdx = static_cast<int64_t>(inputTokens.size()) - 1;
+    int64_t targetOffset = (0 * batchStride) + (lastTokenIdx * seqStride) + (0 * dimStride);
 
     std::vector<float> finalLogits(
         rawLogits + targetOffset,
         rawLogits + targetOffset + vocabSize);
     // ===============================================================
 
-    // Incorporate custom vocabulary logs from user profile weights database safely across threads
+    QString threadDbConnectionName = QString("PredictionWorker_DB_%1").arg(quintptr(QThread::currentThreadId()));
+    QSqlDatabase db;
+
+    if (QSqlDatabase::contains(threadDbConnectionName))
     {
-      // Open database instance using a safe thread-local alias hook
-      QSqlDatabase db = QSqlDatabase::database();
-      if (db.isOpen())
+      db = QSqlDatabase::database(threadDbConnectionName);
+    }
+    else
+    {
+      db = QSqlDatabase::addDatabase("QSQLITE", threadDbConnectionName);
+      db.setDatabaseName(QCoreApplication::applicationDirPath() + "/user_smartprofile.db");
+    }
+
+    if (!db.isOpen() && !db.open())
+    {
+      qDebug() << "Failed to open database:";
+      return;
+    }
+    if (db.isOpen() || db.open())
+    {
+      QSqlQuery query(db);
+      query.prepare("SELECT TokenID, BiasCount FROM UserVocabulary WHERE ProfileMode = :mode");
+      query.bindValue(":mode", mode);
+      if (query.exec())
       {
-        QSqlQuery query;
-        query.prepare("SELECT TokenID, BiasCount FROM UserVocabulary WHERE ProfileMode = :mode");
-        query.bindValue(":mode", mode);
-        if (query.exec())
+        while (query.next())
         {
-          while (query.next())
+          int tokenId = query.value(0).toInt();
+          int count = query.value(1).toInt();
+          if (tokenId >= 0 && static_cast<size_t>(tokenId) < finalLogits.size())
           {
-            int tokenId = query.value(0).toInt();
-            int count = query.value(1).toInt();
-            if (tokenId >= 0 && static_cast<size_t>(tokenId) < finalLogits.size())
-            {
-              finalLogits[tokenId] += (static_cast<float>(count) * 0.45f);
-            }
+            finalLogits[tokenId] += (static_cast<float>(count) * 0.45f);
           }
         }
       }
@@ -139,24 +178,51 @@ void PredictionWorker::processPrediction(const QString &contextText, const QStri
       indexedLogits.push_back({finalLogits[i], static_cast<int>(i)});
     }
 
-    // Retrieve the top 3 recommended token structures using descending probability score order
-    std::partial_sort(indexedLogits.begin(), indexedLogits.begin() + 3, indexedLogits.end(),
+    std::partial_sort(indexedLogits.begin(), indexedLogits.begin() + 50, indexedLogits.end(),
                       [](const std::pair<float, int> &a, const std::pair<float, int> &b)
                       {
                         return a.first > b.first;
                       });
 
+    QStringList contextWords = contextText.split(' ', Qt::SkipEmptyParts);
+    QString currentPartialWord = "";
+
+    if (!contextText.endsWith(" ") && !contextWords.isEmpty())
+    {
+      currentPartialWord = contextWords.last().toLower();
+    }
+
     QStringList recommendations;
-    for (int i = 0; i < 3; ++i)
+    for (int i = 0; i < 500 && recommendations.size() < 5; ++i)
     {
       std::vector<uint64_t> singleToken = {static_cast<uint64_t>(indexedLogits[i].second)};
       std::string decodedWord = tokenizerInstance.decode(singleToken);
       qDebug() << "Decoded token ID" << indexedLogits[i].second << "to word:" << QString::fromStdString(decodedWord);
 
       QString wordResult = QString::fromStdString(decodedWord);
-      if (!wordResult.isEmpty())
+      if (wordResult.contains('\n') || wordResult.contains('\r') || wordResult.isEmpty())
       {
-        recommendations << wordResult;
+        continue;
+      }
+
+      QString cleanWord = wordResult.trimmed();
+      if (cleanWord.isEmpty() || cleanWord == "." || cleanWord == "," || cleanWord == "!" || cleanWord == "?" || cleanWord == "-" || cleanWord == "_")
+      {
+        continue;
+      }
+
+      if (!currentPartialWord.isEmpty())
+      {
+        if (!cleanWord.toLower().startsWith(currentPartialWord) || cleanWord.toLower() == currentPartialWord)
+        {
+          continue;
+        }
+      }
+
+      if (!recommendations.contains(cleanWord))
+      {
+        recommendations << cleanWord;
+        qDebug() << "Accepted prediction candidate:" << cleanWord << "(ID:" << indexedLogits[i].second << ")";
       }
     }
 

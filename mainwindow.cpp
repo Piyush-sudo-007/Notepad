@@ -19,6 +19,7 @@
 #include <QCompleter>
 #include <QStringListModel>
 #include <QCoreApplication>
+#include <QTextCursor>
 
 QString currentFile;
 
@@ -41,8 +42,23 @@ MainWindow::MainWindow(QWidget *parent)
 
     connect(completer, QOverload<const QString &>::of(&QCompleter::activated), this, [=](const QString &text)
             {
+
+        if(ui->textEdit->toPlainText().isEmpty()) {
+            return;
+        }
+
         QTextCursor cursor = ui->textEdit->textCursor();
-        cursor.insertText(text);
+        QTextCursor wordCursor = cursor;
+        wordCursor.movePosition(QTextCursor::StartOfWord, QTextCursor::KeepAnchor);
+        QString manualPrefix = wordCursor.selectedText();
+        int extra = text.length() - manualPrefix.length();
+
+        QString missingSuffix = text.right(extra);
+
+        cursor.insertText(missingSuffix);
+        cursor.insertText(" ");
+        ui->textEdit->setTextCursor(cursor);
+
         logWordToUserVocabulary(text); });
 
     connect(ui->textEdit, &QTextEdit::textChanged, this, [=]()
@@ -57,7 +73,7 @@ MainWindow::MainWindow(QWidget *parent)
         }
 
         QString trackingContext = fullDocumentText.right(80);
-        if(!trackingContext.isEmpty() && trackingContext.endsWith(" ")) {
+        if(!trackingContext.isEmpty()) {
             emit requestPrediction(trackingContext, currentMode);
         } });
 }
@@ -314,7 +330,9 @@ void MainWindow::initSmartEngine()
 void MainWindow::handlePredictions(const QStringList &suggestions)
 {
     if (suggestions.isEmpty())
+    {
         return;
+    }
 
     completerModel->setStringList(suggestions);
 
@@ -332,7 +350,9 @@ void MainWindow::logWordToUserVocabulary(const QString &word)
 
     std::vector<uint64_t> ids = tokenizerInstance.encode(word.toStdString());
     if (ids.empty())
+    {
         return;
+    }
 
     int acceptedTokenId = static_cast<int>(ids[0]);
 

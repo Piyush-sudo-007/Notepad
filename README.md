@@ -1,4 +1,4 @@
-# 📝 NotePad (Qt C++)
+# 📝 SmartPad
 
 A lightweight and user-friendly text editor with offline next word predictions built using the Qt framework.
 
