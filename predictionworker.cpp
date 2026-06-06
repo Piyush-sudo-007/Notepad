@@ -19,7 +19,6 @@ PredictionWorker::~PredictionWorker() = default;
 
 void PredictionWorker::loadModel(const QString &modelPath)
 {
-  qDebug() << "Loading model from:" << modelPath;
   try
   {
     Ort::SessionOptions sessionOptions;
@@ -28,50 +27,40 @@ void PredictionWorker::loadModel(const QString &modelPath)
 
     std::wstring wideModelPath = modelPath.toStdWString();
     session = std::make_unique<Ort::Session>(env, wideModelPath.c_str(), sessionOptions);
-    qDebug() << "Model loaded successfully.";
     emit modelLoadedStatus(true);
   }
   catch (const std::exception &e)
   {
-    qDebug() << "Failed to load model:" << e.what();
     emit modelLoadedStatus(false);
   }
 }
 
 void PredictionWorker::processPrediction(const QString &contextText, const QString &mode)
 {
-  qDebug() << "Processing prediction for context:" << contextText;
   if (!session || contextText.isEmpty())
   {
-    qDebug() << "Model not loaded or empty context.";
     return;
   }
 
   try
   {
     QString absoluteTomlPath = QCoreApplication::applicationDirPath() + "/assets/tiktoken.toml";
-    qDebug() << "Loading tokenizer config from:" << absoluteTomlPath;
 
     sw::tokenizer::TiktokenFactory factory(absoluteTomlPath.toStdString());
     sw::tokenizer::Tiktoken tokenizerInstance = factory.create("p50k_base");
 
     QString trimmedContext = contextText.trimmed();
     trimmedContext = trimmedContext.replace(QChar(0x00A0), " ");
-    qDebug() << "Trimmed context:" << trimmedContext;
     if (trimmedContext.isEmpty())
     {
-      qDebug() << "Warning: Context text is empty after trimming.";
       return;
     }
 
     std::string contextStr = trimmedContext.toStdString();
     std::vector<uint64_t> tokensInt = tokenizerInstance.encode(contextStr);
 
-    qDebug() << "Encoded tokens count:" << tokensInt.size();
-
     if (tokensInt.empty())
     {
-      qDebug() << "Warning: No tokens generated from the input context.";
       return;
     }
 
@@ -88,7 +77,6 @@ void PredictionWorker::processPrediction(const QString &contextText, const QStri
     {
       if (t >= vocabSize)
       {
-        qDebug() << "Warning: Token ID" << t << "exceeds vocabulary size. Skipping.";
         inputTokens.push_back(static_cast<int64_t>(vocabSize - 1));
       }
       else
@@ -97,43 +85,60 @@ void PredictionWorker::processPrediction(const QString &contextText, const QStri
       }
     }
 
-    // 3D tensor layout mapping shape: [Batch (1), Sequence Length, 1]
-    std::vector<int64_t> inputDims = {1, static_cast<int64_t>(inputTokens.size()), 1};
+    std::vector<int64_t> inputDims = {1, static_cast<int64_t>(inputTokens.size())};
     auto memoryInfo = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeCPU);
 
     Ort::Value inputTensor = Ort::Value::CreateTensor<int64_t>(
         memoryInfo, inputTokens.data(), inputTokens.size(), inputDims.data(), inputDims.size());
 
-    const char *inputNames[] = {"input1"};
-    const char *outputNames[] = {"output1"};
+    std::vector<int64_t> positionTokens;
+    std::vector<int64_t> attentionMaskTokens;
 
-    auto outputTensors = session->Run(Ort::RunOptions{nullptr}, inputNames, &inputTensor, 1, outputNames, 1);
-    qDebug() << "ONNX session executed successfully.";
+    for (size_t i = 0; i < inputTokens.size(); ++i)
+    {
+      positionTokens.push_back(static_cast<int64_t>(i));
+      attentionMaskTokens.push_back(1);
+    }
+
+    Ort::Value positionTensor = Ort::Value::CreateTensor<int64_t>(
+        memoryInfo, positionTokens.data(), positionTokens.size(), inputDims.data(), inputDims.size());
+
+    Ort::Value maskTensor = Ort::Value::CreateTensor<int64_t>(
+        memoryInfo, attentionMaskTokens.data(), attentionMaskTokens.size(), inputDims.data(), inputDims.size());
+
+    const char *inputNames[] = {"input_ids", "attention_mask", "position_ids"};
+    const char *outputNames[] = {"logits"};
+
+    Ort::Value inputTensors[] = {std::move(inputTensor), std::move(maskTensor), std::move(positionTensor)};
+
+    auto outputTensors = session->Run(Ort::RunOptions{nullptr}, inputNames, inputTensors, 3, outputNames, 1);
 
     auto typeInfo = outputTensors[0].GetTensorTypeAndShapeInfo();
     std::vector<int64_t> shape = typeInfo.GetShape();
-    qDebug() << "Output tensor shape:" << shape;
 
     float *rawLogits = outputTensors[0].GetTensorMutableData<float>();
 
     // ==================== FIXED POINTER OFFSETS ====================
-    // Dimensions: [Batch (1), SeqLen, Dim (1), VocabSize (50257)]
-    // To read the next-word distribution for the *last* typed word,
-    // we skip past exactly (SeqLen - 1) token blocks.
-    // size_t lastTokenIndex = inputTokens.size() - 1;
-    // size_t targetOffset = lastTokenIndex * 1 * vocabSize;
 
-    int64_t batchStride = shape[1] * shape[2] * shape[3];
-    int64_t seqStride = shape[2] * shape[3];
-    int64_t dimStride = shape[3];
+    int64_t batchStride = shape[1] * shape[2];
+    int64_t seqStride = shape[2];
 
     int64_t lastTokenIdx = static_cast<int64_t>(inputTokens.size()) - 1;
-    int64_t targetOffset = (0 * batchStride) + (lastTokenIdx * seqStride) + (0 * dimStride);
+    int64_t targetOffset = (0 * batchStride) + (lastTokenIdx * seqStride);
 
     std::vector<float> finalLogits(
         rawLogits + targetOffset,
         rawLogits + targetOffset + vocabSize);
     // ===============================================================
+
+    float temperature = 0.65f;
+    if (temperature > 0.0f && std::abs(temperature - 1.0f) > 0.001f)
+    {
+      for (size_t i = 0; i < finalLogits.size(); ++i)
+      {
+        finalLogits[i] /= temperature;
+      }
+    }
 
     QString threadDbConnectionName = QString("PredictionWorker_DB_%1").arg(quintptr(QThread::currentThreadId()));
     QSqlDatabase db;
@@ -150,7 +155,6 @@ void PredictionWorker::processPrediction(const QString &contextText, const QStri
 
     if (!db.isOpen() && !db.open())
     {
-      qDebug() << "Failed to open database:";
       return;
     }
     if (db.isOpen() || db.open())
@@ -166,7 +170,8 @@ void PredictionWorker::processPrediction(const QString &contextText, const QStri
           int count = query.value(1).toInt();
           if (tokenId >= 0 && static_cast<size_t>(tokenId) < finalLogits.size())
           {
-            finalLogits[tokenId] += (static_cast<float>(count) * 0.45f);
+            float logBias = 1.35f * std::log1p(static_cast<float>(count));
+            finalLogits[tokenId] += logBias;
           }
         }
       }
@@ -197,7 +202,6 @@ void PredictionWorker::processPrediction(const QString &contextText, const QStri
     {
       std::vector<uint64_t> singleToken = {static_cast<uint64_t>(indexedLogits[i].second)};
       std::string decodedWord = tokenizerInstance.decode(singleToken);
-      qDebug() << "Decoded token ID" << indexedLogits[i].second << "to word:" << QString::fromStdString(decodedWord);
 
       QString wordResult = QString::fromStdString(decodedWord);
       if (wordResult.contains('\n') || wordResult.contains('\r') || wordResult.isEmpty())
@@ -222,12 +226,8 @@ void PredictionWorker::processPrediction(const QString &contextText, const QStri
       if (!recommendations.contains(cleanWord))
       {
         recommendations << cleanWord;
-        qDebug() << "Accepted prediction candidate:" << cleanWord << "(ID:" << indexedLogits[i].second << ")";
       }
     }
-
-    qDebug() << "Predictions generated:" << recommendations;
-
     emit predictionsReady(recommendations);
   }
   catch (const std::exception &e)

@@ -253,7 +253,7 @@ void MainWindow::on_actionAbout_triggered()
 {
     QString about_txt =
         "<h2>SmartPad</h2>"
-        "<p><b>Version:</b> 2.0.0 (AI Powered)</p>"
+        "<p><b>Version:</b> 1.1.0 (AI Powered)</p>"
         "<p>A lightweight yet powerful text editor built using the Qt framework, supercharged with completely offline, private AI next-word predictions.</p>"
         "<h3>✨ Features</h3>"
         "<ul>"
@@ -329,7 +329,7 @@ void MainWindow::initSmartEngine()
 
     workerThread.start();
 
-    QString absoluteModelPath = QCoreApplication::applicationDirPath() + "/assets/gpt2-lm-head-10.onnx";
+    QString absoluteModelPath = QCoreApplication::applicationDirPath() + "/assets/model.onnx";
     QMetaObject::invokeMethod(worker, "loadModel", Q_ARG(QString, absoluteModelPath));
 }
 
@@ -372,20 +372,25 @@ void MainWindow::logWordToUserVocabulary(const QString &word)
 
 bool MainWindow::eventFilter(QObject *obj, QEvent *event)
 {
-    if (event->type() == QEvent::KeyPress) {
+    if (event->type() == QEvent::KeyPress)
+    {
         QKeyEvent *keyEvent = static_cast<QKeyEvent *>(event);
 
-        if (keyEvent->key() == Qt::Key_Enter || keyEvent->key() == Qt::Key_Return) {
+        if (keyEvent->key() == Qt::Key_Enter || keyEvent->key() == Qt::Key_Return)
+        {
 
-            if (completer && completer->popup() && completer->popup()->isVisible()) {
+            if (completer && completer->popup() && completer->popup()->isVisible())
+            {
 
                 QAbstractItemView *popupView = completer->popup();
                 QModelIndex currentIndex = popupView->currentIndex();
 
-                if (!currentIndex.isValid()) {
+                if (!currentIndex.isValid())
+                {
                     currentIndex = completer->completionModel()->index(0, 0);
                 }
-                if (currentIndex.isValid()) {
+                if (currentIndex.isValid())
+                {
                     QString selectedCompletion = completer->completionModel()->data(currentIndex).toString();
                     completer->popup()->hide();
                     emit completer->activated(selectedCompletion);
